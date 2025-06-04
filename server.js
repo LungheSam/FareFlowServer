@@ -50,29 +50,29 @@ app.post('/send-welcome-message', async (req, res) => {
   const message = `Hello ${firstName},\nThank you for registering on FareFlow.\nEmail: ${email}\nCardUID: ${cardUID}\nPassword: ${password}\nDo not share your credentials given above with anyone\n`;
 
   try {
-    // Check if user already exists
-    const userRef = doc(db, 'users', cardUID);
-    const userSnap = await getDoc(userRef);
+    // // Check if user already exists
+    // const userRef = doc(db, 'users', cardUID);
+    // const userSnap = await getDoc(userRef);
     
-    if (userSnap.exists()) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'User with this card UID already exists' 
-      });
-    }
+    // if (userSnap.exists()) {
+    //   return res.status(400).json({ 
+    //     success: false, 
+    //     error: 'User with this card UID already exists' 
+    //   });
+    // }
 
-    // Create new user in Firestore
-    await setDoc(userRef, {
-      firstName,
-      lastName,
-      email,
-      phone,
-      cardUID,
-      password,
-      balance: 0,
-      trips: [],
-      createdAt: new Date()
-    });
+    // // Create new user in Firestore
+    // await setDoc(userRef, {
+    //   firstName,
+    //   lastName,
+    //   email,
+    //   phone,
+    //   cardUID,
+    //   password,
+    //   balance: 0,
+    //   trips: [],
+    //   createdAt: new Date()
+    // });
 
     // Send Email using EmailJS
     await emailjs.send(
