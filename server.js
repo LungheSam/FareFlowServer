@@ -47,33 +47,9 @@ const sms = at.SMS;
 // Welcome Message Endpoint
 app.post('/send-welcome-message', async (req, res) => {
   const { email, phone, firstName, lastName, cardUID, password } = req.body;
-  const message = `Hello ${firstName},\nThank you for registering on FareFlow.\nEmail: ${email}\nCardUID: ${cardUID}\nPassword: ${password}\nDo not share your credentials given above with anyone\n`;
+  const message = `Hello ${firstName},\nThank you for registering on FareFlow.\nEmail: ${email}\nCardUID: ${cardUID}\nPassword: ${password}\nGo to https://fare-flow-user.vercel.app/  \nDo not share your credentials given above with anyone\n`;
 
   try {
-    // // Check if user already exists
-    // const userRef = doc(db, 'users', cardUID);
-    // const userSnap = await getDoc(userRef);
-    
-    // if (userSnap.exists()) {
-    //   return res.status(400).json({ 
-    //     success: false, 
-    //     error: 'User with this card UID already exists' 
-    //   });
-    // }
-
-    // // Create new user in Firestore
-    // await setDoc(userRef, {
-    //   firstName,
-    //   lastName,
-    //   email,
-    //   phone,
-    //   cardUID,
-    //   password,
-    //   balance: 0,
-    //   trips: [],
-    //   createdAt: new Date()
-    // });
-
     // Send Email using EmailJS
     await emailjs.send(
       process.env.EMAILJS_SERVICE_ID,
@@ -106,7 +82,7 @@ app.post('/send-welcome-message', async (req, res) => {
 app.post('/send-welcome-message-driver', async (req, res) => {
   const { email, phone, firstName, licenseNumber, password } = req.body;
 
-  const message = `Hello Driver ${firstName},\nThank you for registering on FareFlow as Driver.\n----------------\nEmail: ${email}\nPassword: ${password}\nGo to https://fare-flow-admin.vercel.app/ and login with the credentials given.\nDo not share your credentials with anyone....\n`;
+  const message = `Hello Driver ${firstName},\nThank you for registering on FareFlow as Driver.\n----------------\nEmail: ${email}\nPassword: ${password}\nGo to https://fare-flow-driver.vercel.app/ and login with the credentials given.\nDo not share your credentials with anyone....\n`;
 
   try {
     // Send Email using SendGrid
@@ -198,6 +174,7 @@ app.post('/process-fare', async (req, res) => {
 
     const route = busRTData.route;
     if (route?.type === 'dynamic') {
+
       return res.json({
         status: 'info',
         message: 'Welcome aboard. Dynamic pricing not implemented yet.',
@@ -206,13 +183,13 @@ app.post('/process-fare', async (req, res) => {
     }
 
     // Proceed with fixed route fare deduction
-    const FARE_AMOUNT = route.fareAmount || 1500;
-    const MIN_BALANCE = 500;
+    const FARE_AMOUNT = route.fareAmount || 2000;
+    const MIN_BALANCE = 1000;
 
     if (user.balance < MIN_BALANCE) {
       const result = {
         status: 'error',
-        message: `FareFlow Payment Unsuccessful\nLow balance. Minimum required: ${MIN_BALANCE} UGX\nThank you for using FareFlow`,
+        message: `FareFlow Payment Unsuccessful\nDue to Low balance.\nMinimum required: ${MIN_BALANCE} UGX,\nPlease Load Money in your Card: ${cardUID}.\nThank you for using FareFlow`,
         hardwareCode: 'LOW_BALANCE'
       };
       await sms.send({ to: [user.phone], message: result.message });
@@ -261,93 +238,108 @@ app.post('/process-fare', async (req, res) => {
       return res.status(400).json(result);
     }
 
-    // Deduct fare
-    const newBalance = user.balance - FARE_AMOUNT;
-    const transactionRecord = {
-      amount: FARE_AMOUNT,
-      date: new Date().toISOString(),
-      type: 'payment'
-    };
-
-    await updateDoc(userRef, {
-      balance: newBalance,
-      transactions: arrayUnion(transactionRecord)
-    });
-
-    await addDoc(collection(db, 'transactions'), {
-      amount: FARE_AMOUNT,
-      busId: 'Bus 1',
-      busPlateNumber,
-      cardUID,
-      passengerName: `${user.firstName} ${user.lastName || ''}`.trim(),
-      timestamp: new Date()
-    });
-
-    // Update Firestore bus earnings...
-    const busRef = doc(db, 'buses', busPlateNumber);
-    const busSnap = await getDoc(busRef);
-
-    if (busSnap.exists()) {
-      const busData = busSnap.data();
-      const today = new Date();
-      const dayStr = today.toISOString().split('T')[0]; // e.g., "2025-05-26"
-      const monthStr = today.toLocaleString('default', { month: 'short' }); // e.g., "May"
-
-      // Update weekly earnings
-      let weeklyEarnings = [...(busData.weeklyEarnings || [])];
-      const weeklyIndex = weeklyEarnings.findIndex(entry => entry.day === dayStr);
-      if (weeklyIndex >= 0) {
-        weeklyEarnings[weeklyIndex].amount += FARE_AMOUNT;
-      } else {
-        weeklyEarnings.push({ day: dayStr, amount: FARE_AMOUNT });
-      }
-
-      // Update monthly earnings
-      let monthlyEarnings = [...(busData.monthlyEarnings || [])];
-      const monthlyIndex = monthlyEarnings.findIndex(entry => entry.month === monthStr);
-      if (monthlyIndex >= 0) {
-        monthlyEarnings[monthlyIndex].amount += FARE_AMOUNT;
-      } else {
-        monthlyEarnings.push({ month: monthStr, amount: FARE_AMOUNT });
-      }
-
-      // Update total earnings
-      const totalEarnings = (busData.totalEarnings || 0) + FARE_AMOUNT;
-
-      // Apply updates
-      await updateDoc(busRef, {
-        weeklyEarnings,
-        monthlyEarnings,
-        totalEarnings
-      });
-    }
-
-    const smsMessage = `FareFlow Payment Successful\n\nA fare of ${FARE_AMOUNT} UGX has been deducted from your account\nRoute: ${busRTData.route.departure} to ${busRTData.route.destination}\nYour new balance is ${newBalance} UGX.\n\nThank you for riding with us.\nThank you for using FareFlow`;
-    await sms.send({ to: [user.phone], message: smsMessage });
-
-    await emailjs.send(
-      process.env.EMAILJS_SERVICE_ID,
-      process.env.EMAILJS_TEMPLATE_PAYMENT_ID,
-      {
-        first_name: user.firstName,
-        transaction_id: `${cardUID}-${Date.now()}`,
-        transaction_date: new Date().toLocaleString(),
-        card_uid: cardUID,
-        fare_amount: FARE_AMOUNT,
-        previous_balance: user.balance,
-        current_balance: newBalance,
-        email: user.email,
-        status_title: 'Success',
-        status_message: 'Your fare payment has been processed successfully.'
-      }
-    );
-
-    return res.json({
+    // Respond immediately to the hardware
+    res.json({
       status: 'success',
       message: 'Fare processed successfully',
       newBalance,
       hardwareCode: 'PAYMENT_SUCCESS'
     });
+    
+
+   
+    
+
+    // Begin async post-processing
+    setImmediate(async () => {
+      try {
+        // Record transaction in the global transactions collection
+        const newBalance = user.balance - FARE_AMOUNT;
+        const transactionRecord = {
+          amount: FARE_AMOUNT,
+          date: new Date().toISOString(),
+          type: 'payment'
+        };
+
+        // Update user balance and transaction history
+        await updateDoc(userRef, {
+          balance: newBalance,
+          transactions: arrayUnion(transactionRecord)
+        });
+        await addDoc(collection(db, 'transactions'), {
+          amount: FARE_AMOUNT,
+          busId: 'Bus 1',
+          busPlateNumber,
+          cardUID,
+          passengerName: `${user.firstName} ${user.lastName || ''}`.trim(),
+          timestamp: new Date()
+        });
+
+        // Update bus earnings
+        const busRef = doc(db, 'buses', busPlateNumber);
+        const busSnap = await getDoc(busRef);
+
+        if (busSnap.exists()) {
+          const busData = busSnap.data();
+          const today = new Date();
+          const dayStr = today.toISOString().split('T')[0]; // e.g., "2025-05-26"
+          const monthStr = today.toLocaleString('default', { month: 'short' }); // e.g., "May"
+
+          // Weekly earnings
+          let weeklyEarnings = [...(busData.weeklyEarnings || [])];
+          const weeklyIndex = weeklyEarnings.findIndex(entry => entry.day === dayStr);
+          if (weeklyIndex >= 0) {
+            weeklyEarnings[weeklyIndex].amount += FARE_AMOUNT;
+          } else {
+            weeklyEarnings.push({ day: dayStr, amount: FARE_AMOUNT });
+          }
+
+          // Monthly earnings
+          let monthlyEarnings = [...(busData.monthlyEarnings || [])];
+          const monthlyIndex = monthlyEarnings.findIndex(entry => entry.month === monthStr);
+          if (monthlyIndex >= 0) {
+            monthlyEarnings[monthlyIndex].amount += FARE_AMOUNT;
+          } else {
+            monthlyEarnings.push({ month: monthStr, amount: FARE_AMOUNT });
+          }
+
+          // Total earnings
+          const totalEarnings = (busData.totalEarnings || 0) + FARE_AMOUNT;
+
+          await updateDoc(busRef, {
+            weeklyEarnings,
+            monthlyEarnings,
+            totalEarnings
+          });
+        }
+
+        // Send SMS receipt
+        const smsMessage = `FareFlow Payment Successful\n\nA fare of ${FARE_AMOUNT} UGX has been deducted from your account\nRoute: ${busRTData.route.departure} to ${busRTData.route.destination}\nYour new balance is ${newBalance} UGX.\n\nThank you for riding with us.\nThank you for using FareFlow`;
+        await sms.send({ to: [user.phone], message: smsMessage });
+
+        // Send email receipt
+        await emailjs.send(
+          process.env.EMAILJS_SERVICE_ID,
+          process.env.EMAILJS_TEMPLATE_PAYMENT_ID,
+          {
+            first_name: user.firstName,
+            transaction_id: `${cardUID}-${Date.now()}`,
+            transaction_date: new Date().toLocaleString(),
+            card_uid: cardUID,
+            fare_amount: FARE_AMOUNT,
+            previous_balance: user.balance,
+            current_balance: newBalance,
+            email: user.email,
+            status_title: 'Success',
+            status_message: 'Your fare payment has been processed successfully.'
+          }
+        );
+      } catch (err) {
+        console.error('Post-processing error:', err);
+        // Optionally log to monitoring service (e.g. Sentry, LogRocket)
+      }
+    });
+
 
   } catch (error) {
     console.error('Payment processing error:', error);
