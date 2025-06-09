@@ -172,18 +172,10 @@ app.post('/process-fare', async (req, res) => {
       });
     }
 
-    const route = busRTData.route;
-    if (route?.type === 'dynamic') {
-
-      return res.json({
-        status: 'info',
-        message: 'Welcome aboard. Dynamic pricing not implemented yet.',
-        hardwareCode: 'DYNAMIC_ROUTE_WELCOME TO THE BUS'
-      });
-    }
+    
 
     // Proceed with fixed route fare deduction
-    const FARE_AMOUNT = route.fareAmount || 2000;
+    
     const MIN_BALANCE = 1000;
 
     if (user.balance < MIN_BALANCE) {
@@ -211,7 +203,16 @@ app.post('/process-fare', async (req, res) => {
         );
       return res.status(400).json(result);
     }
+    const route = busRTData.route;
+    if (route?.type === 'dynamic') {
 
+      return res.json({
+        status: 'info',
+        message: 'Welcome aboard. Dynamic pricing not implemented yet.',
+        hardwareCode: 'DYNAMIC_ROUTE_WELCOME TO THE BUS'
+      });
+    }
+    const FARE_AMOUNT = route.fareAmount || 2000;
     if (user.balance < FARE_AMOUNT) {
       const result = {
         status: 'error',
@@ -237,7 +238,7 @@ app.post('/process-fare', async (req, res) => {
         );
       return res.status(400).json(result);
     }
-
+    const newBalance = user.balance - FARE_AMOUNT;
     // Respond immediately to the hardware
     res.json({
       status: 'success',
@@ -254,7 +255,7 @@ app.post('/process-fare', async (req, res) => {
     setImmediate(async () => {
       try {
         // Record transaction in the global transactions collection
-        const newBalance = user.balance - FARE_AMOUNT;
+        
         const transactionRecord = {
           amount: FARE_AMOUNT,
           date: new Date().toISOString(),
