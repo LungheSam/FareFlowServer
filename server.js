@@ -6,12 +6,17 @@ const sgMail = require('@sendgrid/mail');
 const { initializeApp } = require('firebase/app');
 const { getFirestore, doc, getDoc, setDoc, addDoc, updateDoc, arrayUnion, collection } = require('firebase/firestore');
 const { getDatabase, ref, get: getRTDB } = require('firebase/database'); // Ensure you import RTDB functions
+const { get, set, remove } = require('firebase/database');
+
 
 require('dotenv').config();
 
 
 const app = express();
 const PORT = 5000;
+const MIN_BALANCE = 1000;
+const RATE_PER_KM=500;
+const busPlateNumber = 'UAZ-123'; // Make this dynamic later
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
   authDomain: process.env.FIREBASE_AUTH_DOMAIN,
@@ -43,6 +48,84 @@ const at = africastalking({
   username: process.env.AT_USERNAME,
 });
 const sms = at.SMS;
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  function toRad(x) {
+    return x * Math.PI / 180;
+  }
+
+  const R = 6371; // Radius of Earth in kilometers
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c; // Distance in kilometers
+}
+
+async function processFare(user, fareAmount) {
+  const userRef = doc(db, 'users', user.cardUID); // or however you're getting the UID
+  const transactionRecord = {
+    amount: fareAmount,
+    date: new Date().toISOString(),
+    type: 'payment'
+  };
+
+  await updateDoc(userRef, {
+    balance: user.balance - fareAmount,
+    transactions: arrayUnion(transactionRecord)
+  });
+
+  await addDoc(collection(db, 'transactions'), {
+    amount: fareAmount,
+    busId: 'Bus 1',
+    busPlateNumber: user.busPlateNumber || 'UNKNOWN',
+    cardUID: user.cardUID,
+    passengerName: `${user.firstName} ${user.lastName || ''}`.trim(),
+    timestamp: new Date()
+  });
+  const busRef = doc(db, 'buses', busPlateNumber);
+  const busSnap = await getDoc(busRef);
+
+    if (busSnap.exists()) {
+      const busData = busSnap.data();
+      const today = new Date();
+      const dayStr = today.toISOString().split('T')[0]; // e.g., "2025-05-26"
+      const monthStr = today.toLocaleString('default', { month: 'short' }); // e.g., "May"
+
+      // Weekly earnings
+      let weeklyEarnings = [...(busData.weeklyEarnings || [])];
+      const weeklyIndex = weeklyEarnings.findIndex(entry => entry.day === dayStr);
+      if (weeklyIndex >= 0) {
+        weeklyEarnings[weeklyIndex].amount += fareAmount;
+      } else {
+        weeklyEarnings.push({ day: dayStr, amount: fareAmount });
+      }
+
+      // Monthly earnings
+      let monthlyEarnings = [...(busData.monthlyEarnings || [])];
+      const monthlyIndex = monthlyEarnings.findIndex(entry => entry.month === monthStr);
+      if (monthlyIndex >= 0) {
+        monthlyEarnings[monthlyIndex].amount += fareAmount;
+      } else {
+        monthlyEarnings.push({ month: monthStr, amount: fareAmount });
+      }
+
+      // Total earnings
+      const totalEarnings = (busData.totalEarnings || 0) + fareAmount;
+
+      await updateDoc(busRef, {
+        weeklyEarnings,
+        monthlyEarnings,
+        totalEarnings
+      });
+    }
+}
+
 
 // Welcome Message Endpoint
 app.post('/send-welcome-message', async (req, res) => {
@@ -140,7 +223,6 @@ app.post('/process-fare', async (req, res) => {
     }
 
     const user = userSnap.data();
-
     if (user.blocked) {
       return res.status(400).json({
         status: 'error',
@@ -150,7 +232,7 @@ app.post('/process-fare', async (req, res) => {
     }
 
     // 2. Get Bus Info from RTDB
-    const busPlateNumber = 'UAZ-123'; // Make this dynamic later
+    
     const busRTRef = ref(dbRT, `buses/${busPlateNumber}`);
     const busRTSnap = await getRTDB(busRTRef);
 
@@ -172,16 +254,11 @@ app.post('/process-fare', async (req, res) => {
       });
     }
 
-    
-
     // Proceed with fixed route fare deduction
-    
-    const MIN_BALANCE = 1000;
-
     if (user.balance < MIN_BALANCE) {
       const result = {
         status: 'error',
-        message: `FareFlow Payment Unsuccessful\nDue to Low balance.\nMinimum required: ${MIN_BALANCE} UGX,\nPlease Load Money in your Card: ${cardUID}.\nThank you for using FareFlow`,
+        message: `FareFlow Payment Unsuccessful\nDue to Low balance.\nMinimum required for every trip: ${MIN_BALANCE} UGX,\nPlease Load Money in your Card: ${cardUID}.\nThank you for using FareFlow`,
         hardwareCode: 'LOW_BALANCE'
       };
       await sms.send({ to: [user.phone], message: result.message });
@@ -193,7 +270,7 @@ app.post('/process-fare', async (req, res) => {
               transaction_id: `${cardUID}-${Date.now()}`,
               transaction_date: new Date().toLocaleString(),
               card_uid: cardUID,
-              fare_amount: FARE_AMOUNT,
+              // fare_amount: FARE_AMOUNT,
               previous_balance: user.balance,
               current_balance: newBalance,
               email: user.email,
@@ -205,13 +282,161 @@ app.post('/process-fare', async (req, res) => {
     }
     const route = busRTData.route;
     if (route?.type === 'dynamic') {
+      const busRef = ref(dbRT, `buses/${busPlateNumber}`);
+      const passengersRef = ref(dbRT, `buses/${busPlateNumber}/passengers`);
+      const passengerRef = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
 
-      return res.json({
-        status: 'info',
-        message: 'Welcome aboard. Dynamic pricing not implemented yet.',
-        hardwareCode: 'DYNAMIC_ROUTE_WELCOME TO THE BUS'
+      // --- Ensure passengers node is an object
+      const busSnap = await get(busRef);
+      const busData = busSnap.val() || {};
+  
+      if (typeof busData.passengers === 'string') {
+        // Fix incorrect data type
+        await set(passengersRef, {});
+      }
+
+      const passengerSnap = await get(passengerRef);
+
+      // === START TRIP ===
+      if (!passengerSnap.exists()) {
+        const locationSnap = await get(ref(dbRT, `buses/${busPlateNumber}/location`));
+        const location = locationSnap.val() || {};
+
+        const { latitude, longitude } = location;
+
+        if (latitude === undefined || longitude === undefined) {
+          return res.json({
+            status: 'error',
+            message: 'Bus location not available. Try again shortly.',
+            hardwareCode: 'LOCATION_UNAVAILABLE'
+          });
+        }
+
+        const passengerData = {
+          name: `${user.firstName} ${user.lastName || ''}`.trim(),
+          cardUID,
+          startTime: Date.now(),
+          startLat: latitude,
+          startLon: longitude
+        };
+
+        await set(passengerRef, passengerData);
+        await updateDoc(doc(db, 'users', cardUID), { onTrip: true });
+
+        res.json({
+          status: 'info',
+          message: 'Welcome aboard. Dynamic pricing in effect.',
+          hardwareCode: 'DYNAMIC_ROUTE_WELCOME_TO_BUS'
+        });
+
+        const smsMessage = `You have started a trip from ${route.departure}.\nBus: ${busPlateNumber}\nDynamic pricing is active.\nPlease tap your card again when you stop at destination.\nService fee: 500UGX`;
+        await sms.send({ to: [user.phone], message: smsMessage });
+
+        await emailjs.send(
+          process.env.EMAILJS_SERVICE_ID,
+          process.env.EMAILJS_TEMPLATE_TRIP_START_ID,
+          {
+            first_name: user.firstName,
+            trip_start_time: new Date().toLocaleString(),
+            route_start: route.departure,
+            email: user.email
+          }
+        );
+
+    return; // Early exit
+      }
+
+      // === END TRIP ===
+      const startData = passengerSnap.val();
+      const { startLat, startLon } = startData;
+
+      const locationSnap = await get(ref(dbRT, `buses/${busPlateNumber}/location`));
+      const location = locationSnap.val() || {};
+      const { latitude: currentLat, longitude: currentLon } = location;
+
+      if (
+        startLat === undefined || startLon === undefined ||
+        currentLat === undefined || currentLon === undefined
+      ) {
+        return res.json({
+          status: 'error',
+          message: 'Missing location data to complete trip.',
+          hardwareCode: 'INCOMPLETE_TRIP_LOCATION'
+        });
+      }
+
+      const distanceKm = haversineDistance(startLat, startLon, currentLat, currentLon);
+      const fareAmount = distanceKm * RATE_PER_KM;
+
+      if (fareAmount > user.balance) {
+        // Notify driver
+        await set(ref(dbRT, `buses/${busPlateNumber}/notifications/${Date.now()}`), {
+          type: 'low_balance',
+          cardUID,
+          message: 'Passenger balance too low. Trip ended.'
+        });
+
+        await processFare(user, user.balance);
+        await updateDoc(doc(db, 'users', cardUID), { onTrip: false });
+        await remove(passengerRef);
+
+        res.json({
+          status: 'error',
+          message: 'Trip ended: Insufficient balance.',
+          hardwareCode: 'TRIP_ENDED_LOW_BALANCE'
+        });
+
+        return;
+      }
+
+      // Normal trip end
+      res.json({
+        status: 'success',
+        // message: `Trip complete. Fare: ${fareAmount.toFixed(0)} UGX`,
+        message: `Trip complete.`,
+        hardwareCode: 'TRIP_COMPLETE'
       });
+      setImmediate(async () => {
+          try {
+            await processFare(user, fareAmount);
+            await updateDoc(doc(db, 'users', cardUID), { onTrip: false });
+            await remove(passengerRef);
+
+            const smsMessage = `FareFlow Trip complete.\nFare: ${fareAmount.toFixed(0)} UGX\nDistance: ${distanceKm.toFixed(2)} km\nThank you for using riding with us,\nThank you for using FareFlow`;
+            await sms.send({ to: [user.phone], message: smsMessage });
+
+            await emailjs.send(
+              process.env.EMAILJS_SERVICE_ID,
+              process.env.EMAILJS_TEMPLATE_PAYMENT_ID,
+              {
+                first_name: user.firstName,
+                transaction_id: `${cardUID}-${Date.now()}`,
+                transaction_date: new Date().toLocaleString(),
+                card_uid: cardUID,
+                fare_amount: fareAmount.toFixed(0),
+                previous_balance: user.balance,
+                current_balance: user.balance - fareAmount,
+                email: user.email,
+                status_title: 'Trip Complete',
+                status_message: 'Thank you for riding. Payment processed.'
+              }
+            );
+          }catch (err) {
+            console.error('Post-processing error:', err);
+            // Optionally log to monitoring service (e.g. Sentry, LogRocket)
+          }
+    });
+
+
+
+
+      return;
     }
+
+
+
+
+    //Fixed Route Type Payment
     const FARE_AMOUNT = route.fareAmount || 2000;
     if (user.balance < FARE_AMOUNT) {
       const result = {
@@ -230,7 +455,7 @@ app.post('/process-fare', async (req, res) => {
             card_uid: cardUID,
             fare_amount: FARE_AMOUNT,
             previous_balance: user.balance,
-            current_balance: newBalance,
+            current_balance: user.balance,
             email: user.email,
             status_title:'Payment Failed',
             status_message:'Unfortunately, your fare payment could not be processed. Insufficient balance for the fare. Needed:'+{FARE_AMOUNT}+'UGX.\nPlease ensure you have sufficient balance or contact support.'
@@ -246,11 +471,7 @@ app.post('/process-fare', async (req, res) => {
       newBalance,
       hardwareCode: 'PAYMENT_SUCCESS'
     });
-    
-
-   
-    
-
+  
     // Begin async post-processing
     setImmediate(async () => {
       try {
@@ -313,7 +534,7 @@ app.post('/process-fare', async (req, res) => {
             totalEarnings
           });
         }
-
+        
         // Send SMS receipt
         const smsMessage = `FareFlow Payment Successful\n\nA fare of ${FARE_AMOUNT} UGX has been deducted from your account\nRoute: ${busRTData.route.departure} to ${busRTData.route.destination}\nYour new balance is ${newBalance} UGX.\n\nThank you for riding with us.\nThank you for using FareFlow`;
         await sms.send({ to: [user.phone], message: smsMessage });
@@ -335,6 +556,28 @@ app.post('/process-fare', async (req, res) => {
             status_message: 'Your fare payment has been processed successfully.'
           }
         );
+
+        const busRefRT = ref(dbRT, `buses/${busPlateNumber}`);
+        const passengersRef = ref(dbRT, `buses/${busPlateNumber}/passengers`);
+        const passengerRef = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
+        const busSnapRT = await get(busRefRT);
+        const busData = busSnapRT.val() || {};
+    
+        if (typeof busData.passengers === 'string') {
+          // Fix incorrect data type
+          await set(passengersRef, {});
+        }
+        const passengerSnap = await get(passengerRef);
+        if (!passengerSnap.exists()) {
+          const passengerData = {
+          name: `${user.firstName} ${user.lastName || ''}`.trim(),
+          cardUID,
+          startTime: Date.now(),
+        };
+
+        await set(passengerRef, passengerData);
+        }
+
       } catch (err) {
         console.error('Post-processing error:', err);
         // Optionally log to monitoring service (e.g. Sentry, LogRocket)
@@ -351,7 +594,6 @@ app.post('/process-fare', async (req, res) => {
     });
   }
 });
-
 
 app.post('/notify-balance-load', async (req, res) => {
   const { cardUID, amount, newBalance, email, phone, firstName } = req.body;
@@ -388,7 +630,6 @@ app.post('/notify-balance-load', async (req, res) => {
     res.status(500).json({ status: 'error', message: 'Failed to send notifications' });
   }
 });
-
 // Get User Balance Endpoint
 app.get('/user-balance/:cardUID', async (req, res) => {
   try {
@@ -404,7 +645,6 @@ app.get('/user-balance/:cardUID', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 // Add Funds Endpoint
 app.post('/add-funds', async (req, res) => {
   const { cardUID, amount } = req.body;
@@ -432,7 +672,6 @@ app.post('/add-funds', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
