@@ -207,6 +207,7 @@ app.post('/send-welcome-message-driver', async (req, res) => {
 });
 
 app.post('/process-fare', async (req, res) => {
+  console.log(String(req.method)+ " - " +String(req.url));
   const { cardUID } = req.body;
 
   try {
@@ -272,7 +273,7 @@ app.post('/process-fare', async (req, res) => {
               card_uid: cardUID,
               // fare_amount: FARE_AMOUNT,
               previous_balance: user.balance,
-              current_balance: newBalance,
+              // current_balance: newBalance,
               email: user.email,
               status_title:'Payment Failed',
               status_message:'Unfortunately, your fare payment could not be processed. Low balance. Minimum required: '+{MIN_BALANCE}+'UGX\nPlease ensure you have sufficient balance or contact support.'
@@ -534,7 +535,18 @@ app.post('/process-fare', async (req, res) => {
             totalEarnings
           });
         }
-        
+        // Add passenger to RTDB if not already there
+      const passengerRefFixed = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
+      const passengerSnapFixed = await get(passengerRefFixed);
+
+      if (!passengerSnapFixed.exists()) {
+        await set(passengerRefFixed, {
+          name: `${user.firstName} ${user.lastName || ''}`.trim(),
+          cardUID,
+          timestamp: Date.now()
+        });
+      }
+
         // Send SMS receipt
         const smsMessage = `FareFlow Payment Successful\n\nA fare of ${FARE_AMOUNT} UGX has been deducted from your account\nRoute: ${busRTData.route.departure} to ${busRTData.route.destination}\nYour new balance is ${newBalance} UGX.\n\nThank you for riding with us.\nThank you for using FareFlow`;
         await sms.send({ to: [user.phone], message: smsMessage });
@@ -557,27 +569,6 @@ app.post('/process-fare', async (req, res) => {
           }
         );
 
-        const busRefRT = ref(dbRT, `buses/${busPlateNumber}`);
-        const passengersRef = ref(dbRT, `buses/${busPlateNumber}/passengers`);
-        const passengerRef = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
-        const busSnapRT = await get(busRefRT);
-        const busData = busSnapRT.val() || {};
-    
-        if (typeof busData.passengers === 'string') {
-          // Fix incorrect data type
-          await set(passengersRef, {});
-        }
-        const passengerSnap = await get(passengerRef);
-        if (!passengerSnap.exists()) {
-          const passengerData = {
-          name: `${user.firstName} ${user.lastName || ''}`.trim(),
-          cardUID,
-          startTime: Date.now(),
-        };
-
-        await set(passengerRef, passengerData);
-        }
-
       } catch (err) {
         console.error('Post-processing error:', err);
         // Optionally log to monitoring service (e.g. Sentry, LogRocket)
@@ -596,6 +587,7 @@ app.post('/process-fare', async (req, res) => {
 });
 
 app.post('/notify-balance-load', async (req, res) => {
+  console.log(String(req.method)+ " - " +String(req.url));
   const { cardUID, amount, newBalance, email, phone, firstName } = req.body;
 
   try {
@@ -632,6 +624,7 @@ app.post('/notify-balance-load', async (req, res) => {
 });
 // Get User Balance Endpoint
 app.get('/user-balance/:cardUID', async (req, res) => {
+  console.log(String(req.method)+ " - " +String(req.url));
   try {
     const userRef = doc(db, 'users', req.params.cardUID);
     const userSnap = await getDoc(userRef);
@@ -647,6 +640,7 @@ app.get('/user-balance/:cardUID', async (req, res) => {
 });
 // Add Funds Endpoint
 app.post('/add-funds', async (req, res) => {
+  console.log(String(req.method)+ " - " +String(req.url));
   const { cardUID, amount } = req.body;
   
   try {
@@ -656,7 +650,7 @@ app.post('/add-funds', async (req, res) => {
     if (!userSnap.exists()) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+    const userData=userSnap.data();
     const currentBalance = userSnap.data().balance;
     const newBalance = currentBalance + Number(amount);
     
@@ -665,9 +659,22 @@ app.post('/add-funds', async (req, res) => {
     });
     
     res.json({ 
-      message: `Added ${amount} UGX to account`,
+      message: `Successfully added ${amount} UGX to account ${cardUID}\nNew Balance: ${newBalance}`,
       newBalance: newBalance 
     });
+    await fetch('https://fareflowserver-production.up.railway.app/notify-balance-load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardUID,
+          amount,
+          newBalance,
+          email: userData.email,
+          phone: userData.phone,
+          firstName: userData.firstName,
+        })
+      });
+  
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
