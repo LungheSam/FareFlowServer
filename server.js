@@ -126,6 +126,13 @@ async function processFare(user, fareAmount) {
     }
 }
 
+const writeFareResponseToRTDB = async (busPlateNumber, response) => {
+  const responseRef = ref(dbRT, `buses/${busPlateNumber}/fareResponse`);
+  await set(responseRef, {
+    ...response,
+    timestamp: Date.now()
+  });
+};
 
 // Welcome Message Endpoint
 app.post('/send-welcome-message', async (req, res) => {
@@ -216,20 +223,25 @@ app.post('/process-fare', async (req, res) => {
     const userSnap = await getDoc(userRef);
 
     if (!userSnap.exists()) {
-      return res.status(200).json({
-        status: 'error',
-        message: 'User not found',
-        hardwareCode: 'USER_NOT_FOUND'
-      });
+      const result = {
+          status: 'error',
+          message: 'User not found',
+          hardwareCode: 'USER_NOT_FOUND'
+        };
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        return res.status(200).json(result);
+
     }
 
     const user = userSnap.data();
     if (user.blocked) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'User Blocked',
-        hardwareCode: 'USER_BLOCKED'
-      });
+      const result = {
+          status: 'error',
+          message: 'User Blocked',
+          hardwareCode: 'USER_BLOCKED'
+        };
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        return res.status(200).json(result);
     }
 
     // 2. Get Bus Info from RTDB
@@ -238,21 +250,25 @@ app.post('/process-fare', async (req, res) => {
     const busRTSnap = await getRTDB(busRTRef);
 
     if (!busRTSnap.exists()) {
-      return res.status(200).json({
+      const result = {
         status: 'error',
         message: 'Bus not found in RTDB',
         hardwareCode: 'BUS_NOT_FOUND'
-      });
+      };
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        return res.status(200).json(result);
     }
 
     const busRTData = busRTSnap.val();
 
     if (!busRTData.status) {
-      return res.status(200).json({
+      const result = {
         status: 'inactive',
         message: 'Bus is currently inactive',
         hardwareCode: 'BUS_INACTIVE'
-      });
+      };
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        return res.status(200).json(result);
     }
 
     // Proceed with fixed route fare deduction
@@ -262,6 +278,7 @@ app.post('/process-fare', async (req, res) => {
         message: `FareFlow Payment Unsuccessful\nDue to Low balance.\nMinimum required for every trip: ${MIN_BALANCE} UGX,\nPlease Load Money in your Card: ${cardUID}.\nThank you for using FareFlow`,
         hardwareCode: 'LOW_BALANCE'
       };
+      await writeFareResponseToRTDB(busPlateNumber, result);
       await sms.send({ to: [user.phone], message: result.message });
       await emailjs.send(
             process.env.EMAILJS_SERVICE_ID,
@@ -304,13 +321,20 @@ app.post('/process-fare', async (req, res) => {
         const location = locationSnap.val() || {};
 
         const { latitude, longitude } = location;
-
+        const result={
+          status: 'info',
+          message: 'Welcome aboard. Dynamic pricing in effect.',
+          hardwareCode: 'DYNAMIC_ROUTE_WELCOME_TO_BUS'
+        }
+        await writeFareResponseToRTDB(busPlateNumber, result);
         if (latitude === undefined || longitude === undefined) {
-          return res.json({
+          const result={
             status: 'error',
             message: 'Bus location not available. Try again shortly.',
             hardwareCode: 'LOCATION_UNAVAILABLE'
-          });
+          }
+          await writeFareResponseToRTDB(busPlateNumber, result);
+          return res.json(result);
         }
 
         const passengerData = {
@@ -324,23 +348,20 @@ app.post('/process-fare', async (req, res) => {
         await set(passengerRef, passengerData);
         await updateDoc(doc(db, 'users', cardUID), { onTrip: true });
 
-        res.json({
-          status: 'info',
-          message: 'Welcome aboard. Dynamic pricing in effect.',
-          hardwareCode: 'DYNAMIC_ROUTE_WELCOME_TO_BUS'
-        });
+        res.json(result);
 
         const smsMessage = `You have started a trip from ${route.departure}.\nBus: ${busPlateNumber}\nDynamic pricing is active.\nPlease tap your card again when you stop at destination.\nService fee: 500UGX`;
         await sms.send({ to: [user.phone], message: smsMessage });
 
         await emailjs.send(
           process.env.EMAILJS_SERVICE_ID,
-          process.env.EMAILJS_TEMPLATE_TRIP_START_ID,
+          process.env.EMAILJS_TEMPLATE_ID,
           {
             first_name: user.firstName,
             trip_start_time: new Date().toLocaleString(),
             route_start: route.departure,
-            email: user.email
+            email: user.email,
+            message:smsMessage
           }
         );
 
@@ -359,11 +380,13 @@ app.post('/process-fare', async (req, res) => {
         startLat === undefined || startLon === undefined ||
         currentLat === undefined || currentLon === undefined
       ) {
-        return res.json({
+        const result={
           status: 'error',
           message: 'Missing location data to complete trip.',
           hardwareCode: 'INCOMPLETE_TRIP_LOCATION'
-        });
+        }
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        return res.json(result);
       }
 
       const distanceKm = haversineDistance(startLat, startLon, currentLat, currentLon);
@@ -380,23 +403,25 @@ app.post('/process-fare', async (req, res) => {
         await processFare(user, user.balance);
         await updateDoc(doc(db, 'users', cardUID), { onTrip: false });
         await remove(passengerRef);
-
-        res.json({
+        const result={
           status: 'error',
           message: 'Trip ended: Insufficient balance.',
           hardwareCode: 'TRIP_ENDED_LOW_BALANCE'
-        });
+        }
+        await writeFareResponseToRTDB(busPlateNumber, result);
+        res.json(result);
 
         return;
       }
-
-      // Normal trip end
-      res.json({
+      const result={
         status: 'success',
         // message: `Trip complete. Fare: ${fareAmount.toFixed(0)} UGX`,
         message: `Trip complete.`,
         hardwareCode: 'TRIP_COMPLETE'
-      });
+      }
+      await writeFareResponseToRTDB(busPlateNumber, result);
+      // Normal trip end
+      res.json(result);
       setImmediate(async () => {
           try {
             await processFare(user, fareAmount);
@@ -424,7 +449,6 @@ app.post('/process-fare', async (req, res) => {
             );
           }catch (err) {
             console.error('Post-processing error:', err);
-            // Optionally log to monitoring service (e.g. Sentry, LogRocket)
           }
     });
 
@@ -445,6 +469,7 @@ app.post('/process-fare', async (req, res) => {
         message: `FareFlow Payment Unsuccessful\nInsufficient balance for the fare. Needed: ${FARE_AMOUNT} UGX\nThank you for using FareFlow`,
         hardwareCode: 'INSUFFICIENT_FARE'
       };
+      await writeFareResponseToRTDB(busPlateNumber, result);
       await sms.send({ to: [user.phone], message: result.message });
       await emailjs.send(
           process.env.EMAILJS_SERVICE_ID,
@@ -466,6 +491,12 @@ app.post('/process-fare', async (req, res) => {
     }
     const newBalance = user.balance - FARE_AMOUNT;
     // Respond immediately to the hardware
+    await writeFareResponseToRTDB(busPlateNumber, {
+      status: 'success',
+      message: 'Fare processed successfully',
+      newBalance,
+      hardwareCode: 'PAYMENT_SUCCESS'
+    });
     res.json({
       status: 'success',
       message: 'Fare processed successfully',
