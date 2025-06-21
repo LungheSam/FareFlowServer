@@ -216,7 +216,7 @@ app.post('/process-fare', async (req, res) => {
     const userSnap = await getDoc(userRef);
 
     if (!userSnap.exists()) {
-      return res.status(404).json({
+      return res.status(200).json({
         status: 'error',
         message: 'User not found',
         hardwareCode: 'USER_NOT_FOUND'
@@ -238,7 +238,7 @@ app.post('/process-fare', async (req, res) => {
     const busRTSnap = await getRTDB(busRTRef);
 
     if (!busRTSnap.exists()) {
-      return res.status(404).json({
+      return res.status(200).json({
         status: 'error',
         message: 'Bus not found in RTDB',
         hardwareCode: 'BUS_NOT_FOUND'
@@ -248,8 +248,8 @@ app.post('/process-fare', async (req, res) => {
     const busRTData = busRTSnap.val();
 
     if (!busRTData.status) {
-      return res.status(403).json({
-        status: 'error',
+      return res.status(200).json({
+        status: 'inactive',
         message: 'Bus is currently inactive',
         hardwareCode: 'BUS_INACTIVE'
       });
@@ -279,7 +279,7 @@ app.post('/process-fare', async (req, res) => {
               status_message:'Unfortunately, your fare payment could not be processed. Low balance. Minimum required: '+{MIN_BALANCE}+'UGX\nPlease ensure you have sufficient balance or contact support.'
             }
         );
-      return res.status(400).json(result);
+      return res.status(200).json(result);
     }
     const route = busRTData.route;
     if (route?.type === 'dynamic') {
@@ -462,7 +462,7 @@ app.post('/process-fare', async (req, res) => {
             status_message:'Unfortunately, your fare payment could not be processed. Insufficient balance for the fare. Needed:'+{FARE_AMOUNT}+'UGX.\nPlease ensure you have sufficient balance or contact support.'
           }
         );
-      return res.status(400).json(result);
+      return res.status(200).json(result);
     }
     const newBalance = user.balance - FARE_AMOUNT;
     // Respond immediately to the hardware
