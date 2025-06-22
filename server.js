@@ -149,11 +149,20 @@ const client = mqtt.connect('mqtt://test.mosquitto.org');
 
 client.on('connect', () => {
   console.log('✅ MQTT connected');
-  client.subscribe(mqttRequestTopic, () => {
+  client.subscribe(mqttRequestTopic,{ qos: 1 }, () => {
     console.log(`📡 Subscribed to ${mqttRequestTopic}`);
   });
 });
+function publishFareResponse(busPlateNumber, cardUID, result) {
+  console.log(result);
+  const response = {
+    cardUID,
+    timestamp: Date.now(),
+    ...result
+  };
 
+  client.publish(mqttResponseTopic, JSON.stringify(response));
+}
 client.on('message', async (topic, message) => {
   if (topic === mqttRequestTopic) {
     try {
@@ -169,8 +178,7 @@ client.on('message', async (topic, message) => {
 // Core Fare Logic
 async function processFareRequest(cardUID, busPlateNumber) {
   try {
-    // const MIN_BALANCE = 500;
-    // const RATE_PER_KM = 800;
+
 
     const userRef = doc(db, 'users', cardUID);
     const userSnap = await getDoc(userRef);
@@ -531,16 +539,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
 }
 
 // Publish response back to MQTT
-function publishFareResponse(busPlateNumber, cardUID, result) {
-  console.log(result);
-  const response = {
-    cardUID,
-    timestamp: Date.now(),
-    ...result
-  };
 
-  client.publish(mqttResponseTopic, JSON.stringify(response));
-}
 
 
 
