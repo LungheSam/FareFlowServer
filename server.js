@@ -167,8 +167,8 @@ client.on('message', async (topic, message) => {
   if (topic === mqttRequestTopic) {
     try {
       const { cardUID } = JSON.parse(message.toString());
-      console.log('Card:', cardUID);
-      await processFareRequest(cardUID, 'UAZ-123');
+      console.log('Tapped Card:', cardUID);
+      await processFareRequest(cardUID, busPlateNumber);
     } catch (err) {
       console.error('Error handling MQTT request:', err);
     }
@@ -176,7 +176,7 @@ client.on('message', async (topic, message) => {
 });
 
 // Core Fare Logic
-async function processFareRequest(cardUID, busPlateNumber) {
+async function processFareRequest(cardUID, busPlate) {
   try {
 
 
@@ -190,7 +190,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
         hardwareCode: 'USER_NOT_FOUND'
       };
 
-      return publishFareResponse(busPlateNumber, cardUID, result);
+      return publishFareResponse(busPlate, cardUID, result);
     }
 
     const user = userSnap.data();
@@ -202,10 +202,10 @@ async function processFareRequest(cardUID, busPlateNumber) {
         hardwareCode: 'USER_BLOCKED'
       };
 
-      return publishFareResponse(busPlateNumber, cardUID, result);
+      return publishFareResponse(busPlate, cardUID, result);
     }
 
-    const busRTRef = ref(dbRT, `buses/${busPlateNumber}`);
+    const busRTRef = ref(dbRT, `buses/${busPlate}`);
     const busRTSnap = await get(busRTRef);
 
     if (!busRTSnap.exists()) {
@@ -215,7 +215,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
         hardwareCode: 'BUS_NOT_FOUND'
       };
 
-      return publishFareResponse(busPlateNumber, cardUID, result);
+      return publishFareResponse(busPlate, cardUID, result);
     }
 
     const busRTData = busRTSnap.val();
@@ -227,7 +227,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
         hardwareCode: 'BUS_INACTIVE'
       };
 
-      return publishFareResponse(busPlateNumber, cardUID, result);
+      return publishFareResponse(busPlate, cardUID, result);
     }
 
 
@@ -254,9 +254,9 @@ async function processFareRequest(cardUID, busPlateNumber) {
 
     const route = busRTData.route;
     if (route?.type === 'dynamic') {
-      const busRef = ref(dbRT, `buses/${busPlateNumber}`);
-      const passengersRef = ref(dbRT, `buses/${busPlateNumber}/passengers`);
-      const passengerRef = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
+      const busRef = ref(dbRT, `buses/${busPlate}`);
+      const passengersRef = ref(dbRT, `buses/${busPlate}/passengers`);
+      const passengerRef = ref(dbRT, `buses/${busPlate}/passengers/${cardUID}`);
 
       // --- Ensure passengers node is an object
       const busSnap = await get(busRef);
@@ -271,7 +271,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
 
       // === START TRIP ===
       if (!passengerSnap.exists()) {
-        const locationSnap = await get(ref(dbRT, `buses/${busPlateNumber}/location`));
+        const locationSnap = await get(ref(dbRT, `buses/${busPlate}/location`));
         const location = locationSnap.val() || {};
 
         const { latitude, longitude } = location;
@@ -306,20 +306,20 @@ async function processFareRequest(cardUID, busPlateNumber) {
 
         // publishFareResponse(busPlateNumber, cardUID, result);
 
-        const smsMessage = `You have started a trip from ${route.departure}.\nBus: ${busPlateNumber}\nDynamic pricing is active.\nPlease tap your card again when you stop at destination.\nService fee: 500UGX`;
+        const smsMessage = `You have started a trip from ${route.departure}.\nBus: ${busPlate}\nDynamic pricing is active.\nPlease tap your card again when you stop at destination.\nService fee: 500UGX`;
         await sms.send({ to: [user.phone], message: smsMessage });
 
-        await emailjs.send(
-          process.env.EMAILJS_SERVICE_ID,
-          process.env.EMAILJS_TEMPLATE_ID,
-          {
-            first_name: user.firstName,
-            trip_start_time: new Date().toLocaleString(),
-            route_start: route.departure,
-            email: user.email,
-            message:smsMessage
-          }
-        );
+        // await emailjs.send(
+        //   process.env.EMAILJS_SERVICE_ID,
+        //   process.env.EMAILJS_TEMPLATE_ID,
+        //   {
+        //     first_name: user.firstName,
+        //     trip_start_time: new Date().toLocaleString(),
+        //     route_start: route.departure,
+        //     email: user.email,
+        //     message:smsMessage
+        //   }
+        // );
 
     return; // Early exit
       }
@@ -328,7 +328,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
       const startData = passengerSnap.val();
       const { startLat, startLon } = startData;
 
-      const locationSnap = await get(ref(dbRT, `buses/${busPlateNumber}/location`));
+      const locationSnap = await get(ref(dbRT, `buses/${busPlate}/location`));
       const location = locationSnap.val() || {};
       const { latitude: currentLat, longitude: currentLon } = location;
 
@@ -342,7 +342,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
           hardwareCode: 'INCOMPLETE_TRIP_LOCATION'
         }
         // await writeFareResponseToRTDB(busPlateNumber, result);
-        publishFareResponse(busPlateNumber, cardUID, result);
+        publishFareResponse(busPlate, cardUID, result);
         return;
       }
 
@@ -351,7 +351,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
 
       if (fareAmount > user.balance) {
         // Notify driver
-        await set(ref(dbRT, `buses/${busPlateNumber}/notifications/${Date.now()}`), {
+        await set(ref(dbRT, `buses/${busPlate}/notifications/${Date.now()}`), {
           type: 'low_balance',
           cardUID,
           message: 'Passenger balance too low. Trip ended.'
@@ -366,7 +366,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
           hardwareCode: 'TRIP_ENDED_LOW_BALANCE'
         }
         // await writeFareResponseToRTDB(busPlateNumber, result);
-        publishFareResponse(busPlateNumber, cardUID, result);
+        publishFareResponse(busPlate, cardUID, result);
 
         return;
       }
@@ -379,7 +379,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
       }
       // await writeFareResponseToRTDB(busPlateNumber, result);
       // Normal trip end
-      publishFareResponse(busPlateNumber, cardUID, result);
+      publishFareResponse(busPlate, cardUID, result);
 
       setImmediate(async () => {
           try {
@@ -421,7 +421,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
         message: `FareFlow Payment Unsuccessful\nInsufficient balance for the fare. Needed: ${FARE_AMOUNT} UGX\nThank you for using FareFlow`,
         hardwareCode: 'INSUFFICIENT_FARE'
       };
-      publishFareResponse(busPlateNumber, cardUID, result);
+      publishFareResponse(busPlate, cardUID, result);
       await sms.send({ to: [user.phone], message: result.message });
       await emailjs.send(process.env.EMAILJS_SERVICE_ID, process.env.EMAILJS_TEMPLATE_PAYMENT_ID, {
         first_name: user.firstName,
@@ -447,7 +447,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
       hardwareCode: 'PAYMENT_SUCCESS'
     };
 
-    publishFareResponse(busPlateNumber, cardUID, successResponse);
+    publishFareResponse(busPlate, cardUID, successResponse);
 
     // Async post-processing
     setImmediate(async () => {
@@ -464,13 +464,13 @@ async function processFareRequest(cardUID, busPlateNumber) {
         await addDoc(collection(db, 'transactions'), {
           amount: FARE_AMOUNT,
           busId: 'Bus 1',
-          busPlateNumber,
+          busPlate,
           cardUID,
           passengerName: `${user.firstName} ${user.lastName || ''}`.trim(),
           timestamp: new Date()
         });
 
-        const busDocRef = doc(db, 'buses', busPlateNumber);
+        const busDocRef = doc(db, 'buses', busPlate);
         const busDocSnap = await getDoc(busDocRef);
         if (busDocSnap.exists()) {
           const busData = busDocSnap.data();
@@ -497,7 +497,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
           });
         }
 
-        const passengerRef = ref(dbRT, `buses/${busPlateNumber}/passengers/${cardUID}`);
+        const passengerRef = ref(dbRT, `buses/${busPlate}/passengers/${cardUID}`);
         const passengerSnap = await get(passengerRef);
         if (!passengerSnap.exists()) {
           await set(passengerRef, {
@@ -530,7 +530,7 @@ async function processFareRequest(cardUID, busPlateNumber) {
 
   } catch (err) {
     console.error('Processing fare error:', err);
-    publishFareResponse(busPlateNumber, cardUID, {
+    publishFareResponse(busPlate, cardUID, {
       status: 'error',
       message: 'Internal server error',
       hardwareCode: 'SERVER_ERROR'
@@ -840,17 +840,17 @@ app.post('/process-fare', async (req, res) => {
         const smsMessage = `You have started a trip from ${route.departure}.\nBus: ${busPlateNumber}\nDynamic pricing is active.\nPlease tap your card again when you stop at destination.\nService fee: 500UGX`;
         await sms.send({ to: [user.phone], message: smsMessage });
 
-        await emailjs.send(
-          process.env.EMAILJS_SERVICE_ID,
-          process.env.EMAILJS_TEMPLATE_ID,
-          {
-            first_name: user.firstName,
-            trip_start_time: new Date().toLocaleString(),
-            route_start: route.departure,
-            email: user.email,
-            message:smsMessage
-          }
-        );
+        // await emailjs.send(
+        //   process.env.EMAILJS_SERVICE_ID,
+        //   process.env.EMAILJS_TEMPLATE_ID,
+        //   {
+        //     first_name: user.firstName,
+        //     trip_start_time: new Date().toLocaleString(),
+        //     route_start: route.departure,
+        //     email: user.email,
+        //     message:smsMessage
+        //   }
+        // );
 
     return; // Early exit
       }
